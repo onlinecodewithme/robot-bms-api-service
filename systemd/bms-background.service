@@ -11,7 +11,7 @@ User=xavier-bms
 Group=xavier-bms
 WorkingDirectory=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader
 Environment=PATH=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/venv/bin/python /home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_background_service.py --data-file /tmp/bms_latest.json --interval 5.0 --log-level INFO
+ExecStart=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/venv/bin/python /home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_background_service.py --data-file /home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_data/bms_latest.json --interval 5.0 --log-level INFO
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -21,10 +21,10 @@ SyslogIdentifier=bms-background
 
 # Security settings
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/tmp
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+ReadWritePaths=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_data
 
 # Resource limits
 MemoryMax=256M

@@ -1,16 +1,26 @@
-# Raspberry Pi Daly BMS BLE Reader v1.0
+# Raspberry Pi Daly BMS BLE Reader v2.0
 
-A Python-based solution for reading battery data from Daly Smart BMS via Bluetooth Low Energy (BLE) using Raspberry Pi 4's built-in Bluetooth. This project is adapted from the ESP32 implementation and provides the same functionality with additional Python-specific features.
+A comprehensive Python-based solution for reading battery data from Daly Smart BMS via Bluetooth Low Energy (BLE) using Raspberry Pi 4's built-in Bluetooth. This project provides both standalone BLE reading and a full REST API service with background data collection for production deployments.
 
 ## 🚀 Features
 
+### Core Features
 - **Native Raspberry Pi BLE Support**: Uses built-in Bluetooth without external hardware
-- **Identical Protocol Implementation**: Same Daly BMS protocol parsing as ESP32 version  
+- **Identical Protocol Implementation**: Same Daly BMS protocol parsing as ESP32 version
 - **JSON-Compatible Output**: Structured data output for easy integration with ROS2 and other systems
 - **Interactive Command Interface**: Terminal-based commands similar to ESP32 serial interface
 - **Continuous Reading Mode**: Real-time monitoring with configurable intervals
 - **Auto-discovery**: Automatic BMS device discovery and connection
-- **Production Ready**: Thoroughly tested protocol implementation with proper error handling
+
+### NEW in v2.0 - Production API Service
+- **🔧 REST API Service**: Full HTTP API with multiple endpoints for fast data access
+- **📊 Background Data Collection**: Continuous BMS data reading with file caching
+- **🚀 Systemd Integration**: Auto-startup services that run on boot
+- **⚡ Fast Response Times**: ~1ms API responses using cached data
+- **🔍 Comprehensive Endpoints**: Health monitoring, status checks, formatted output
+- **📁 Local Data Storage**: Production-ready data storage in dedicated folder
+- **🔄 Enhanced Error Handling**: Robust connection recovery and logging
+- **📡 Network Accessible**: HTTP API accessible from other devices on network
 
 ## 🔧 Hardware Requirements
 
@@ -70,6 +80,96 @@ chmod +x *.py
 ```
 
 ## 🚀 Usage
+
+## NEW: REST API Service (Production Mode)
+
+The v2.0 system includes a full REST API service with background data collection for production deployments.
+
+### Quick Start - API Service
+
+Install and start the production services:
+
+```bash
+cd raspberry_pi_bms_reader
+sudo ./install_services.sh
+```
+
+This automatically:
+- ✅ Installs and enables systemd services for auto-startup on boot
+- ✅ Starts background BMS data collection service
+- ✅ Starts REST API server on http://localhost:5000
+- ✅ Creates local data storage in `bms_data/` folder
+- ✅ Configures proper permissions and security
+
+### API Endpoints
+
+Once services are running, access BMS data via HTTP:
+
+```bash
+# Comprehensive BMS summary with all data
+curl http://localhost:5000/bms/summary
+
+# Human-readable formatted output
+curl http://localhost:5000/bms/formatted
+
+# Service health check
+curl http://localhost:5000/health
+
+# Complete raw BMS data
+curl http://localhost:5000/bms
+
+# Cell voltage details
+curl http://localhost:5000/bms/cells
+
+# Temperature information
+curl http://localhost:5000/bms/temps
+```
+
+### Network Access
+
+API is accessible from other devices on your network:
+
+```bash
+# Replace with your Raspberry Pi's IP address
+curl http://192.168.1.186:5000/bms/summary
+```
+
+### Service Management
+
+```bash
+# Check service status
+sudo systemctl status bms-background bms-api
+
+# View real-time logs
+sudo journalctl -u bms-background -f
+sudo journalctl -u bms-api -f
+
+# Restart services
+sudo systemctl restart bms-background bms-api
+
+# Stop services
+sudo systemctl stop bms-background bms-api
+
+# Disable auto-startup
+sudo systemctl disable bms-background bms-api
+```
+
+### Data Files
+
+The system stores data in the local `bms_data/` folder:
+
+```bash
+# View latest BMS data
+cat raspberry_pi_bms_reader/bms_data/bms_latest.json
+
+# View service status
+cat raspberry_pi_bms_reader/bms_data/bms_status.json
+
+# Check data freshness
+ls -la raspberry_pi_bms_reader/bms_data/
+```
+
+## Standalone Usage (Development Mode)
 
 ### Interactive Mode (Recommended)
 
@@ -398,12 +498,36 @@ class BMSData:
 
 ```
 raspberry_pi_bms_reader/
-├── daly_bms_reader.py          # Main continuous reading script
-├── interactive_bms_reader.py   # Interactive command interface
-├── requirements.txt            # Python dependencies
-├── setup.py                   # Package setup configuration
-├── install.sh                 # Automated installation script
-└── README.md                  # This documentation
+├── Core BMS Reading
+│   ├── daly_bms_reader.py          # Main continuous reading script
+│   ├── interactive_bms_reader.py   # Interactive command interface
+│   └── bms_data_formatter.py       # Human-readable data formatting
+├── NEW v2.0 - Production API Service
+│   ├── bms_background_service.py   # Background BMS data collection service
+│   ├── bms_api_service.py          # REST API server with multiple endpoints
+│   ├── install_services.sh         # Production service installer
+│   └── bms_data/                   # Local data storage directory
+│       ├── bms_latest.json         # Latest BMS data (auto-updated)
+│       └── bms_status.json         # Service status information
+├── System Integration
+│   └── systemd/                    # Systemd service configurations
+│       ├── bms-background.service  # Background collection service
+│       └── bms-api.service         # REST API service
+├── Development Tools
+│   ├── scan_debug.py              # BLE scanning and debugging
+│   ├── test_system.py             # System testing utilities
+│   ├── run_bms_reader.sh          # Convenience script for BMS reader
+│   └── run_formatted_reader.sh    # Convenience script for formatted output
+├── Configuration & Setup
+│   ├── requirements.txt            # Python dependencies
+│   ├── setup.py                   # Package setup configuration
+│   ├── install.sh                 # Automated installation script
+│   └── .gitignore                 # Git ignore patterns
+└── Documentation
+    ├── README.md                  # Main documentation (this file)
+    ├── API_GUIDE.md               # Comprehensive API documentation
+    ├── QUICK_START.md             # Quick start guide
+    └── TROUBLESHOOTING.md         # Troubleshooting guide
 ```
 
 ## 🤝 Contributing
@@ -436,4 +560,19 @@ For issues or questions:
 
 ---
 
-**Status**: ✅ Production Ready - Fully compatible with ESP32 version and tested on Raspberry Pi 4
+**Status**: ✅ Production Ready v2.0 - Complete REST API service with systemd integration, enhanced BMS data logging, and auto-startup capabilities. Fully compatible with ESP32 version and tested on Raspberry Pi 4.
+
+## 🆕 What's New in v2.0
+
+- **🔧 REST API Service**: Complete HTTP API with multiple endpoints
+- **📊 Background Data Collection**: Continuous BMS monitoring service
+- **🚀 Systemd Integration**: Auto-startup services that run on boot
+- **⚡ Lightning Fast**: ~1ms API response times using cached data
+- **📡 Network Accessible**: HTTP API available on network (port 5000)
+- **🔍 Enhanced Logging**: Complete BMS_DATA JSON logging
+- **📁 Local Storage**: Production-ready data storage in `bms_data/`
+- **🔄 Robust Recovery**: Enhanced error handling and reconnection logic
+- **📈 Multiple Endpoints**: Health, status, summary, formatted, cells, temps
+- **🛡️ Production Security**: Proper systemd security and permissions
+
+Perfect for production deployments requiring reliable, high-performance BMS monitoring with web-based access and automatic system integration.

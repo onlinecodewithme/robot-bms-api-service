@@ -35,7 +35,7 @@ logger = logging.getLogger('bms_background')
 class BMSBackgroundService:
     """Background service for collecting BMS data"""
     
-    def __init__(self, data_file_path: str = "/tmp/bms_latest.json", read_interval: float = 5.0):
+    def __init__(self, data_file_path: str = "./bms_data/bms_latest.json", read_interval: float = 5.0):
         self.data_file_path = Path(data_file_path)
         self.read_interval = read_interval
         self.reader = DalyBMSReader(scan_timeout=10.0, read_interval=read_interval)
@@ -66,15 +66,41 @@ class BMSBackgroundService:
             logger.error(f"Failed to write status file: {e}")
     
     def write_bms_data(self, data: dict):
-        """Atomically write BMS data to file"""
+        """Atomically write BMS data to file with robust error handling"""
         try:
+            # Ensure directory exists and is writable
+            self.data_file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Check if we can write to the directory
+            if not os.access(self.data_file_path.parent, os.W_OK):
+                logger.error(f"No write permission to directory: {self.data_file_path.parent}")
+                return
+            
+            # Create JSON content
+            json_content = json.dumps(data, separators=(',', ':'))
+            
             # Write to temporary file first for atomic operation
             temp_file = self.data_file_path.with_suffix('.tmp')
+            
+            # Explicit file writing with error handling
+            logger.debug(f"Attempting to write BMS data to: {temp_file}")
             with open(temp_file, 'w') as f:
-                json.dump(data, f, separators=(',', ':'))
+                f.write(json_content)
+                f.flush()  # Ensure data is written to disk
+                os.fsync(f.fileno())  # Force write to disk
+            
+            logger.debug(f"Temporary file written successfully: {temp_file}")
             
             # Atomic move to final location
             temp_file.replace(self.data_file_path)
+            logger.debug(f"File moved to final location: {self.data_file_path}")
+            
+            # Verify file was created and has content
+            if self.data_file_path.exists():
+                file_size = self.data_file_path.stat().st_size
+                logger.debug(f"File verification: {self.data_file_path} exists, size: {file_size} bytes")
+            else:
+                logger.error(f"File verification failed: {self.data_file_path} does not exist after write")
             
             self.last_successful_read = time.time()
             self.connection_retry_count = 0
@@ -84,12 +110,22 @@ class BMSBackgroundService:
                 parsed_data = data.get('daly_protocol', {}).get('commands', {}).get('main_info', {}).get('parsed_data', {})
                 pack_voltage = parsed_data.get('packVoltage', 0)
                 soc = parsed_data.get('soc', 0)
-                logger.debug(f"Updated BMS data: {pack_voltage:.3f}V, {soc:.1f}%")
+                logger.info(f"Successfully updated BMS data file: {pack_voltage:.3f}V, {soc:.1f}%")
             except Exception as e:
-                logger.debug(f"Updated BMS data (logging error: {e})")
+                logger.info(f"Successfully updated BMS data file (logging error: {e})")
             
+        except PermissionError as e:
+            logger.error(f"Permission denied writing BMS data: {e}")
+            logger.error(f"Current user: {os.getenv('USER', 'unknown')}")
+            logger.error(f"Data file path: {self.data_file_path}")
+            logger.error(f"Directory permissions: {oct(self.data_file_path.parent.stat().st_mode)[-3:]}")
         except Exception as e:
             logger.error(f"Failed to write BMS data: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Working directory: {os.getcwd()}")
+            logger.error(f"Data file path: {self.data_file_path}")
+            logger.error(f"Directory exists: {self.data_file_path.parent.exists()}")
+            logger.error(f"Directory writable: {os.access(self.data_file_path.parent, os.W_OK)}")
     
     def write_error_status(self, error: str):
         """Write error status when BMS reading fails"""

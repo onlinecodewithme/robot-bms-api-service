@@ -28,8 +28,8 @@ app = Flask(__name__)
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
 
 # Global configuration
-DATA_FILE_PATH = Path("/tmp/bms_latest.json")
-STATUS_FILE_PATH = Path("/tmp/bms_status.json")
+DATA_FILE_PATH = Path("./bms_data/bms_latest.json")
+STATUS_FILE_PATH = Path("./bms_data/bms_status.json")
 MAX_DATA_AGE_SECONDS = 30  # Consider data stale after 30 seconds
 
 class BMSAPIService:
