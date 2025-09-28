@@ -1,0 +1,6 @@
+bleak>=0.21.1
+asyncio-mqtt>=0.16.1
+paho-mqtt>=1.6.1
+setuptools>=65.0.0
+wheel>=0.37.1
+flask>=2.3.0

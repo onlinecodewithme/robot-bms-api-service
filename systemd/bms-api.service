@@ -1,0 +1,43 @@
+[Unit]
+Description=BMS REST API Service
+Documentation=file:///home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/README.md
+After=network-online.target bms-background.service
+Wants=network-online.target
+Requires=bms-background.service
+
+[Service]
+Type=simple
+User=xavier-bms
+Group=xavier-bms
+WorkingDirectory=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader
+Environment=PATH=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=FLASK_APP=bms_api_service.py
+Environment=FLASK_ENV=production
+ExecStart=/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/venv/bin/python /home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_api_service.py --host 0.0.0.0 --port 5000 --data-file /tmp/bms_latest.json --status-file /tmp/bms_status.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bms-api
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/tmp
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=25%
+
+# Network access for HTTP server
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=10.0.0.0/8
+IPAddressAllow=172.16.0.0/12
+IPAddressAllow=192.168.0.0/16
+
+[Install]
+WantedBy=multi-user.target
