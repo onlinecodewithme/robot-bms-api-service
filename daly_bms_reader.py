@@ -302,8 +302,28 @@ class DalyBMSReader:
                 self.bms_data.max_cell_voltage = max_cell_voltage
                 self.bms_data.min_cell_voltage = min_cell_voltage
                 
-                # Current (0.0A when idle)
-                self.bms_data.current = 0.0
+                # Parse Current from BMS response
+                # In Daly protocol, current is typically at bytes 35-38 (after cell voltages)
+                # Usually stored as signed 16-bit or 32-bit value in milliamps
+                if len(data) >= 38:
+                    # Try parsing as signed 16-bit value at byte 35-36 (common location)
+                    current_raw = struct.unpack(">h", data[35:37])[0]  # signed 16-bit big-endian
+                    self.bms_data.current = current_raw / 100.0  # Convert from centiamps to amps
+                    
+                    # If the value seems unreasonable, try another location (bytes 37-38)
+                    if abs(self.bms_data.current) > 500:  # Sanity check for reasonable current values
+                        current_raw = struct.unpack(">h", data[37:39])[0]
+                        self.bms_data.current = current_raw / 100.0
+                        
+                    # Another common format is 32-bit at bytes 35-38
+                    if abs(self.bms_data.current) > 500:
+                        current_raw = struct.unpack(">i", data[35:39])[0]  # signed 32-bit
+                        self.bms_data.current = current_raw / 1000.0  # Convert from milliamps to amps
+                        
+                    logger.debug(f"Parsed current: {self.bms_data.current}A (raw: {current_raw})")
+                else:
+                    self.bms_data.current = 0.0
+                    logger.info("Insufficient data for current parsing, defaulting to 0.0A")
                 
                 # Parse SOC (bytes 87-88)
                 soc_raw = struct.unpack(">H", data[87:89])[0]
@@ -348,12 +368,32 @@ class DalyBMSReader:
                                 })
                                 break
                 
-                # MOS Status (assuming normal operation)
+                # Parse MOS Status from BMS response
+                # In Daly protocol, MOS status is typically in bytes around 89-92
+                # Byte 89: MOS status flags
+                # Bit 0: Charging MOS status (1=on, 0=off)
+                # Bit 1: Discharging MOS status (1=on, 0=off)
+                # Byte 90-91: Additional status information
+                
+                mos_status_byte = data[89] if len(data) > 89 else 0
+                balancing_byte = data[91] if len(data) > 91 else 0
+                
+                # Parse MOS status bits
+                charging_mos = bool(mos_status_byte & 0x01)  # Bit 0
+                discharging_mos = bool(mos_status_byte & 0x02)  # Bit 1
+                
+                # Check for balancing status - typically indicated by non-zero balancing byte
+                # or specific bit patterns in status bytes
+                balancing_active = bool(balancing_byte & 0x01) or bool(data[92] & 0x01 if len(data) > 92 else 0)
+                
                 self.bms_data.mos_status = {
-                    "chargingMos": True,
-                    "dischargingMos": True,
-                    "balancing": False
+                    "chargingMos": charging_mos,
+                    "dischargingMos": discharging_mos,
+                    "balancing": balancing_active
                 }
+                
+                logger.debug(f"MOS Status - Charging: {charging_mos}, Discharging: {discharging_mos}, Balancing: {balancing_active}")
+                logger.debug(f"MOS status byte: 0x{mos_status_byte:02X}, Balancing byte: 0x{balancing_byte:02X}")
                 
                 self.bms_data.data_valid = True
                 logger.info(f"BMS data parsed successfully: {self.bms_data.pack_voltage}V, {self.bms_data.soc}%, {len(self.bms_data.cell_voltages)} cells")

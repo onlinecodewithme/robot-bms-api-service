@@ -1,1 +1,1 @@
-{"service":"bms_background","status":"reading","last_read":1759074228.8446507,"pack_voltage":52.509,"soc":48.3,"current":0.0}
+{"service":"bms_background","status":"starting","start_time":1759262631.1418846,"data_file":"/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader/bms_data/bms_latest.json","read_interval":5.0}
