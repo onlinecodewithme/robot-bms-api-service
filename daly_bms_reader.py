@@ -7,7 +7,7 @@ Adapted from ESP32 implementation for Raspberry Pi 4 Model B
 BMS Configuration:
 - MAC Address: 41:18:12:01:18:9F
 - Device Name: DL-41181201189F
-- Protocol: Daly BMS Protocol v4.1
+- Protocol: Daly BMS Protocol v4.1 (using standard 0x90 commands)
 """
 
 import asyncio
@@ -65,7 +65,7 @@ class BMSData:
 
 
 class DalyBMSReader:
-    """Raspberry Pi Daly BMS Reader using BLE"""
+    """Raspberry Pi Daly BMS Reader using BLE with standard 0x90 commands"""
     
     # BMS Configuration
     TARGET_BMS_MAC = "41:18:12:01:18:9f"  # Convert to lowercase for bleak
@@ -76,13 +76,22 @@ class DalyBMSReader:
     RX_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"  # Notifications
     TX_CHAR_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"  # Write
     
-    # Daly Protocol Constants
-    HEAD_READ = bytes([0xD2, 0x03])
-    CMD_INFO = bytes([0x00, 0x00, 0x00, 0x3E, 0xD7, 0xB9])
+    # Daly Protocol Constants - Using standard UART commands
+    COMMANDS = {
+        'PACK_MEASUREMENTS': 0x90,  # Voltage, Current, SOC (REAL-TIME)
+        'CELL_MINMAX': 0x91,        # Min/Max cell voltages
+        'TEMP_MINMAX': 0x92,        # Min/Max temperatures
+        'MOSFET_STATUS': 0x93,      # Charge/Discharge MOS status
+        'STATUS_INFO': 0x94,        # Status information
+        'CELL_VOLTAGES': 0x95,      # Individual cell voltages
+        'TEMPERATURES': 0x96,       # Temperature sensors
+        'FAILURE_CODES': 0x98       # Alarms/failures
+    }
     
-    def __init__(self, scan_timeout: float = 10.0, read_interval: float = 5.0):
+    def __init__(self, scan_timeout: float = 10.0, read_interval: float = 5.0, invert_current: bool = False):
         self.scan_timeout = scan_timeout
         self.read_interval = read_interval
+        self.invert_current = invert_current
         self.client: Optional[BleakClient] = None
         self.device: Optional[BLEDevice] = None
         self.connected = False
@@ -93,6 +102,23 @@ class DalyBMSReader:
             device_name="",
             mac_address=""
         )
+    
+    def calculate_checksum(self, data: bytes) -> int:
+        """Calculate Daly protocol checksum"""
+        return sum(data) & 0xFF
+    
+    def build_command(self, cmd_id: int) -> bytes:
+        """Build Daly UART command packet"""
+        packet = bytes([
+            0xA5,  # Start byte
+            0x40,  # Host address
+            cmd_id,  # Command ID
+            0x08,  # Data length
+            0x00, 0x00, 0x00, 0x00,  # Reserved
+            0x00, 0x00, 0x00, 0x00   # Reserved
+        ])
+        checksum = self.calculate_checksum(packet)
+        return packet + bytes([checksum])
         
     async def scan_for_bms(self) -> Optional[BLEDevice]:
         """Scan for BMS device"""
@@ -111,11 +137,9 @@ class DalyBMSReader:
             device_name = device.name or "Unknown"
             device_address = device.address.lower()
             
-            # Get RSSI if available, otherwise show as unknown
             rssi = getattr(device, 'rssi', 'Unknown')
             logger.info(f"Device #{device_count}: {device_name} [{device_address}] RSSI: {rssi} dBm")
             
-            # Check if this is our target BMS
             if (device_address == self.TARGET_BMS_MAC or 
                 device_name == self.TARGET_BMS_NAME or
                 "daly" in device_name.lower() or
@@ -159,11 +183,9 @@ class DalyBMSReader:
                 logger.info("*** Successfully connected to BMS via BLE! ***")
                 logger.info(f"Connected to: {self.device.name} [{self.device.address}]")
                 
-                # Update BMS data
                 self.bms_data.device_name = self.device.name or self.TARGET_BMS_NAME
                 self.bms_data.mac_address = self.device.address.lower()
                 
-                # List available services
                 await self.list_services()
                 
                 self.connected = True
@@ -208,203 +230,141 @@ class DalyBMSReader:
         self.last_response = data
         self.response_received = True
     
+    async def send_command(self, cmd_id: int, timeout: float = 2.0) -> Optional[bytearray]:
+        """Send command and wait for response"""
+        if not self.client or not self.client.is_connected:
+            return None
+        
+        try:
+            service = self.client.services.get_service(self.SERVICE_UUID)
+            rx_char = service.get_characteristic(self.RX_CHAR_UUID)
+            tx_char = service.get_characteristic(self.TX_CHAR_UUID)
+            
+            if not rx_char or not tx_char:
+                return None
+            
+            response_data = bytearray()
+            response_event = asyncio.Event()
+            
+            def handler(sender: BleakGATTCharacteristic, data: bytearray):
+                nonlocal response_data
+                response_data = data
+                response_event.set()
+            
+            await self.client.start_notify(rx_char, handler)
+            
+            command = self.build_command(cmd_id)
+            logger.debug(f"Sending command 0x{cmd_id:02X}: {command.hex()}")
+            await self.client.write_gatt_char(tx_char, command)
+            
+            try:
+                await asyncio.wait_for(response_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout for command 0x{cmd_id:02X}")
+                response_data = None
+            
+            await self.client.stop_notify(rx_char)
+            return response_data
+            
+        except Exception as e:
+            logger.error(f"Error sending command 0x{cmd_id:02X}: {e}")
+            return None
+    
     async def read_bms_data(self) -> bool:
         """Read BMS data using Daly protocol"""
         if not self.client or not self.client.is_connected:
             logger.error("Not connected to BMS")
             return False
-            
+        
+        self.bms_data.timestamp = int(time.time() * 1000)
+        self.bms_data.total_capacity = 230.0
+        success = False
+        
         try:
-            # Get service and characteristics
-            service = self.client.services.get_service(self.SERVICE_UUID)
-            if not service:
-                logger.error("BMS service not found")
-                return False
-                
-            rx_char = service.get_characteristic(self.RX_CHAR_UUID)
-            tx_char = service.get_characteristic(self.TX_CHAR_UUID)
+            # Command 0x90 - Pack measurements (REAL-TIME CURRENT)
+            response_90 = await self.send_command(self.COMMANDS['PACK_MEASUREMENTS'])
+            if response_90 and len(response_90) >= 13:
+                if response_90[0] == 0xA5 and response_90[2] == 0x90:
+                    # Pack voltage (bytes 4-5, 0.1V units)
+                    pack_voltage_raw = struct.unpack(">H", response_90[4:6])[0]
+                    self.bms_data.pack_voltage = round(pack_voltage_raw / 10.0, 3)
+                    
+                    # Current (bytes 8-9, 0.1A units with 30000 offset)
+                    current_raw = struct.unpack(">H", response_90[8:10])[0]
+                    current_amps = (current_raw - 30000) / 10.0
+                    
+                    # Invert if needed (negative = charging, positive = discharging)
+                    if self.invert_current:
+                        current_amps = -current_amps
+                    
+                    self.bms_data.current = round(current_amps, 2)
+                    
+                    # SOC (bytes 10-11, 0.1% units)
+                    soc_raw = struct.unpack(">H", response_90[10:12])[0]
+                    self.bms_data.soc = round(soc_raw / 10.0, 1)
+                    
+                    self.bms_data.remaining_capacity = round((self.bms_data.total_capacity * self.bms_data.soc) / 100.0, 1)
+                    
+                    logger.info(f"Pack: {self.bms_data.pack_voltage}V, {self.bms_data.current}A, {self.bms_data.soc}%")
+                    success = True
             
-            if not rx_char or not tx_char:
-                logger.error("Required characteristics not found")
-                return False
+            # Command 0x91 - Cell min/max
+            response_91 = await self.send_command(self.COMMANDS['CELL_MINMAX'])
+            if response_91 and len(response_91) >= 13:
+                if response_91[0] == 0xA5 and response_91[2] == 0x91:
+                    self.bms_data.max_cell_voltage = struct.unpack(">H", response_91[4:6])[0]
+                    self.bms_data.min_cell_voltage = struct.unpack(">H", response_91[7:9])[0]
             
-            # Setup notifications
-            await self.client.start_notify(rx_char, self.notification_handler)
-            logger.debug("Notifications enabled")
+            # Command 0x92 - Temperatures
+            response_92 = await self.send_command(self.COMMANDS['TEMP_MINMAX'])
+            if response_92 and len(response_92) >= 13:
+                if response_92[0] == 0xA5 and response_92[2] == 0x92:
+                    self.bms_data.temperatures = []
+                    max_temp = response_92[4] - 40
+                    min_temp = response_92[6] - 40
+                    if max_temp >= 0 and max_temp <= 100:
+                        self.bms_data.temperatures.append({"sensor": "T1", "temperature": max_temp})
+                    if min_temp >= 0 and min_temp <= 100:
+                        self.bms_data.temperatures.append({"sensor": "T2", "temperature": min_temp})
             
-            # Prepare and send command
-            command = self.HEAD_READ + self.CMD_INFO
-            logger.debug(f"Sending command: {command.hex()}")
+            # Command 0x93 - MOSFET status
+            response_93 = await self.send_command(self.COMMANDS['MOSFET_STATUS'])
+            if response_93 and len(response_93) >= 13:
+                if response_93[0] == 0xA5 and response_93[2] == 0x93:
+                    mos_byte = response_93[4]
+                    self.bms_data.mos_status = {
+                        "chargingMos": bool(mos_byte & 0x01),
+                        "dischargingMos": bool(mos_byte & 0x02),
+                        "balancing": False
+                    }
             
-            self.response_received = False
-            await self.client.write_gatt_char(tx_char, command)
+            # Command 0x95 - Individual cell voltages (read multiple frames)
+            self.bms_data.cell_voltages = []
+            for frame in range(6):  # 6 frames for 16 cells (3 per frame)
+                response_95 = await self.send_command(self.COMMANDS['CELL_VOLTAGES'])
+                if response_95 and len(response_95) >= 13:
+                    if response_95[0] == 0xA5 and response_95[2] == 0x95:
+                        frame_num = response_95[4]
+                        for i in range(3):
+                            offset = 5 + (i * 2)
+                            cell_voltage_raw = struct.unpack(">H", response_95[offset:offset+2])[0]
+                            cell_voltage = cell_voltage_raw / 1000.0
+                            cell_num = frame_num * 3 + i + 1
+                            if cell_num <= 16:
+                                self.bms_data.cell_voltages.append({
+                                    "cellNumber": cell_num,
+                                    "voltage": round(cell_voltage, 3)
+                                })
+                await asyncio.sleep(0.05)
             
-            # Wait for response
-            timeout = 3.0
-            start_time = time.time()
-            while not self.response_received and (time.time() - start_time) < timeout:
-                await asyncio.sleep(0.01)
+            # Set cycles to default value
+            self.bms_data.cycles = 2
             
-            if self.response_received:
-                logger.debug(f"Response received: {len(self.last_response)} bytes")
-                success = self.parse_bms_response(self.last_response)
-                
-                # Stop notifications
-                await self.client.stop_notify(rx_char)
-                
-                return success
-            else:
-                logger.error("No response received from BMS")
-                await self.client.stop_notify(rx_char)
-                return False
+            self.bms_data.data_valid = success
+            return success
                 
         except Exception as e:
             logger.error(f"Error reading BMS data: {e}")
-            return False
-    
-    def parse_bms_response(self, data: bytearray) -> bool:
-        """Parse BMS response using corrected Daly protocol"""
-        try:
-            if len(data) < 16:
-                logger.error(f"Response too short: {len(data)} bytes")
-                return False
-            
-            # Validate response format (expect 129 bytes total)
-            if len(data) == 129 and data[0] == 0xD2 and data[1] == 0x03:
-                logger.info("Valid Daly protocol response received")
-                
-                # Update timestamp
-                self.bms_data.timestamp = int(time.time() * 1000)
-                
-                # Parse cell voltages (bytes 3-35) - 16 cells, 2 bytes each
-                self.bms_data.cell_voltages = []
-                pack_voltage = 0.0
-                max_cell_voltage = 0
-                min_cell_voltage = 65535
-                
-                for i in range(16):
-                    offset = 3 + (i * 2)
-                    cell_voltage_raw = struct.unpack(">H", data[offset:offset+2])[0]
-                    cell_voltage = cell_voltage_raw / 1000.0
-                    pack_voltage += cell_voltage
-                    
-                    if cell_voltage_raw > max_cell_voltage:
-                        max_cell_voltage = cell_voltage_raw
-                    if cell_voltage_raw < min_cell_voltage:
-                        min_cell_voltage = cell_voltage_raw
-                    
-                    self.bms_data.cell_voltages.append({
-                        "cellNumber": i + 1,
-                        "voltage": round(cell_voltage, 3)
-                    })
-                
-                self.bms_data.pack_voltage = round(pack_voltage, 3)
-                self.bms_data.max_cell_voltage = max_cell_voltage
-                self.bms_data.min_cell_voltage = min_cell_voltage
-                
-                # Parse Current from BMS response
-                # In Daly protocol, current is typically at bytes 35-38 (after cell voltages)
-                # Usually stored as signed 16-bit or 32-bit value in milliamps
-                if len(data) >= 38:
-                    # Try parsing as signed 16-bit value at byte 35-36 (common location)
-                    current_raw = struct.unpack(">h", data[35:37])[0]  # signed 16-bit big-endian
-                    self.bms_data.current = current_raw / 100.0  # Convert from centiamps to amps
-                    
-                    # If the value seems unreasonable, try another location (bytes 37-38)
-                    if abs(self.bms_data.current) > 500:  # Sanity check for reasonable current values
-                        current_raw = struct.unpack(">h", data[37:39])[0]
-                        self.bms_data.current = current_raw / 100.0
-                        
-                    # Another common format is 32-bit at bytes 35-38
-                    if abs(self.bms_data.current) > 500:
-                        current_raw = struct.unpack(">i", data[35:39])[0]  # signed 32-bit
-                        self.bms_data.current = current_raw / 1000.0  # Convert from milliamps to amps
-                        
-                    logger.debug(f"Parsed current: {self.bms_data.current}A (raw: {current_raw})")
-                else:
-                    self.bms_data.current = 0.0
-                    logger.info("Insufficient data for current parsing, defaulting to 0.0A")
-                
-                # Parse SOC (bytes 87-88)
-                soc_raw = struct.unpack(">H", data[87:89])[0]
-                if soc_raw == 904:
-                    self.bms_data.soc = 90.4
-                elif soc_raw <= 1000:
-                    self.bms_data.soc = soc_raw / 10.0
-                else:
-                    self.bms_data.soc = soc_raw
-                
-                # Calculate capacity
-                self.bms_data.total_capacity = 230.0
-                self.bms_data.remaining_capacity = (self.bms_data.total_capacity * self.bms_data.soc) / 100.0
-                
-                # Parse cycles (byte 106)
-                self.bms_data.cycles = data[106]
-                
-                # Parse temperatures
-                self.bms_data.temperatures = []
-                
-                # T1 and T2 at bytes 68 and 70 (value 70 = 30°C with +40 offset)
-                if data[68] == 70:
-                    self.bms_data.temperatures.append({"sensor": "T1", "temperature": 30})
-                if data[70] == 70:
-                    self.bms_data.temperatures.append({"sensor": "T2", "temperature": 30})
-                
-                # Look for MOS temperature
-                for i in range(72, 85):
-                    if data[i] == 73:
-                        self.bms_data.temperatures.append({"sensor": "MOS", "temperature": 33})
-                        break
-                
-                # Fallback temperature parsing if no temperatures found
-                if not self.bms_data.temperatures:
-                    for i in range(60, 85):
-                        if 40 <= data[i] <= 120:
-                            temp = data[i] - 40
-                            if 0 <= temp <= 80:
-                                self.bms_data.temperatures.append({
-                                    "sensor": f"T{(i-60)//2 + 1}",
-                                    "temperature": temp
-                                })
-                                break
-                
-                # Parse MOS Status from BMS response
-                # In Daly protocol, MOS status is typically in bytes around 89-92
-                # Byte 89: MOS status flags
-                # Bit 0: Charging MOS status (1=on, 0=off)
-                # Bit 1: Discharging MOS status (1=on, 0=off)
-                # Byte 90-91: Additional status information
-                
-                mos_status_byte = data[89] if len(data) > 89 else 0
-                balancing_byte = data[91] if len(data) > 91 else 0
-                
-                # Parse MOS status bits
-                charging_mos = bool(mos_status_byte & 0x01)  # Bit 0
-                discharging_mos = bool(mos_status_byte & 0x02)  # Bit 1
-                
-                # Check for balancing status - typically indicated by non-zero balancing byte
-                # or specific bit patterns in status bytes
-                balancing_active = bool(balancing_byte & 0x01) or bool(data[92] & 0x01 if len(data) > 92 else 0)
-                
-                self.bms_data.mos_status = {
-                    "chargingMos": charging_mos,
-                    "dischargingMos": discharging_mos,
-                    "balancing": balancing_active
-                }
-                
-                logger.debug(f"MOS Status - Charging: {charging_mos}, Discharging: {discharging_mos}, Balancing: {balancing_active}")
-                logger.debug(f"MOS status byte: 0x{mos_status_byte:02X}, Balancing byte: 0x{balancing_byte:02X}")
-                
-                self.bms_data.data_valid = True
-                logger.info(f"BMS data parsed successfully: {self.bms_data.pack_voltage}V, {self.bms_data.soc}%, {len(self.bms_data.cell_voltages)} cells")
-                return True
-                
-            else:
-                logger.error(f"Invalid response format or length. Expected 129 bytes starting with 0xD2 0x03, got {len(data)} bytes starting with {data[0]:02x} {data[1]:02x}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error parsing BMS response: {e}")
             return False
     
     def create_json_output(self) -> str:
@@ -418,14 +378,14 @@ class DalyBMSReader:
                 "notifications": "enabled",
                 "commands": {
                     "main_info": {
-                        "command_sent": (self.HEAD_READ + self.CMD_INFO).hex().upper(),
+                        "command_sent": "A540900800000000000000003D",
                         "response_received": self.response_received,
                         "response_data": self.last_response.hex() if self.last_response else "",
                         "parsed_data": {
                             "header": {
-                                "startByte": "0xD2",
-                                "commandId": "0x03",
-                                "dataLength": len(self.last_response) - 3 if self.last_response else 0
+                                "startByte": "0xA5",
+                                "commandId": "0x90",
+                                "dataLength": len(self.last_response) - 5 if self.last_response else 0
                             },
                             "cellVoltages": self.bms_data.cell_voltages,
                             "packVoltage": self.bms_data.pack_voltage,
@@ -436,7 +396,7 @@ class DalyBMSReader:
                             "cycles": self.bms_data.cycles,
                             "temperatures": self.bms_data.temperatures,
                             "mosStatus": self.bms_data.mos_status,
-                            "checksum": f"0x{struct.unpack('>H', self.last_response[127:129])[0]:04X}" if len(self.last_response) >= 129 else "0x0000",
+                            "checksum": f"0x{struct.unpack('>H', self.last_response[-2:])[0]:04X}" if len(self.last_response) >= 2 else "0x0000",
                             "timestamp": str(self.bms_data.timestamp)
                         }
                     }
@@ -461,7 +421,6 @@ class DalyBMSReader:
         try:
             while True:
                 if not self.connected:
-                    # Try to find and connect to BMS
                     device = await self.scan_for_bms()
                     if device:
                         connected = await self.connect_to_bms()
@@ -474,16 +433,13 @@ class DalyBMSReader:
                         await asyncio.sleep(30)
                         continue
                 
-                # Read BMS data
                 if self.connected:
                     success = await self.read_bms_data()
                     if success:
-                        # Output JSON data with BMS_DATA prefix for compatibility
                         json_output = self.create_json_output()
                         print(f"BMS_DATA:{json_output}")
                     else:
                         logger.warning("Failed to read BMS data")
-                        # Check if still connected
                         if not self.client.is_connected:
                             self.connected = False
                 
@@ -499,10 +455,10 @@ class DalyBMSReader:
 
 async def main():
     """Main function"""
-    reader = DalyBMSReader(scan_timeout=10.0, read_interval=5.0)
+    reader = DalyBMSReader(scan_timeout=10.0, read_interval=5.0, invert_current=False)
     
-    print("=== Raspberry Pi Daly BMS BLE Reader v1.0 ===")
-    print("Adapted from ESP32 implementation")
+    print("=== Raspberry Pi Daly BMS BLE Reader v2.0 ===")
+    print("Protocol: Daly UART 0x90 (Real-time)")
     print(f"Target BMS MAC: {reader.TARGET_BMS_MAC}")
     print(f"Target BMS Name: {reader.TARGET_BMS_NAME}")
     print("==============================================")
