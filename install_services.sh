@@ -37,12 +37,18 @@ fi
 echo "🔧 Configuring service files..."
 
 # Update systemd service files with actual paths
+sed -i "s|/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader|$SCRIPT_DIR|g" "$SCRIPT_DIR/systemd/bms-background.service"
 sed -i "s|/home/pi/raspberry_pi_bms_reader|$SCRIPT_DIR|g" "$SCRIPT_DIR/systemd/bms-background.service"
+sed -i "s|User=xavier-bms|User=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-background.service"
 sed -i "s|User=pi|User=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-background.service"
+sed -i "s|Group=xavier-bms|Group=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-background.service"
 sed -i "s|Group=pi|Group=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-background.service"
 
+sed -i "s|/home/xavier-bms/Documents/bms-native-reader/raspberry_pi_bms_reader|$SCRIPT_DIR|g" "$SCRIPT_DIR/systemd/bms-api.service"
 sed -i "s|/home/pi/raspberry_pi_bms_reader|$SCRIPT_DIR|g" "$SCRIPT_DIR/systemd/bms-api.service"
+sed -i "s|User=xavier-bms|User=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-api.service"
 sed -i "s|User=pi|User=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-api.service"
+sed -i "s|Group=xavier-bms|Group=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-api.service"
 sed -i "s|Group=pi|Group=$SERVICE_USER|g" "$SCRIPT_DIR/systemd/bms-api.service"
 
 # Create log directory

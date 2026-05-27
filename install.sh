@@ -4,6 +4,8 @@
 
 set -e
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 echo "=== Raspberry Pi Daly BMS Reader Installation ==="
 echo "This script will install the BMS reader and its dependencies"
 echo "=================================================="
@@ -11,13 +13,7 @@ echo "=================================================="
 # Check if running on Raspberry Pi
 if ! grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null; then
     echo "⚠️  Warning: This doesn't appear to be a Raspberry Pi"
-    echo "The installation will continue, but Bluetooth functionality may not work properly"
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Installation cancelled"
-        exit 1
-    fi
+    echo "The installation will continue on standard Linux system."
 fi
 
 # Check for Python 3.8+
@@ -69,11 +65,11 @@ source venv/bin/activate
 
 # Upgrade pip
 echo "📦 Upgrading pip..."
-pip install --upgrade pip setuptools wheel
+pip install --upgrade pip setuptools wheel --index-url https://pypi.org/simple
 
 # Install Python dependencies
 echo "📦 Installing Python dependencies..."
-pip install -r requirements.txt
+pip install -r requirements.txt --index-url https://pypi.org/simple
 
 # Make scripts executable
 echo "🔧 Making scripts executable..."
@@ -83,18 +79,18 @@ chmod +x interactive_bms_reader.py
 # Create symlinks for easy access
 echo "🔗 Creating command shortcuts..."
 mkdir -p ~/.local/bin
-cat > ~/.local/bin/daly-bms-reader << 'EOF'
+cat > ~/.local/bin/daly-bms-reader << EOF
 #!/bin/bash
-cd "$(dirname "$(readlink -f "$0")")/../../../raspberry_pi_bms_reader"
+cd "${SCRIPT_DIR}"
 source venv/bin/activate
-python3 daly_bms_reader.py "$@"
+python3 daly_bms_reader.py "\$@"
 EOF
 
-cat > ~/.local/bin/daly-bms-interactive << 'EOF'
+cat > ~/.local/bin/daly-bms-interactive << EOF
 #!/bin/bash
-cd "$(dirname "$(readlink -f "$0")")/../../../raspberry_pi_bms_reader"
+cd "${SCRIPT_DIR}"
 source venv/bin/activate
-python3 interactive_bms_reader.py "$@"
+python3 interactive_bms_reader.py "\$@"
 EOF
 
 chmod +x ~/.local/bin/daly-bms-reader
