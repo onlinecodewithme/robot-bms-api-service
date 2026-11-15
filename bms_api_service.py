@@ -32,6 +32,16 @@ DATA_FILE_PATH = Path("./bms_data/bms_latest.json")
 STATUS_FILE_PATH = Path("./bms_data/bms_status.json")
 MAX_DATA_AGE_SECONDS = 30  # Consider data stale after 30 seconds
 
+# Raw charger-detect GPIO state, exported by gpio_control_service.py
+# (robot-control-system) since it holds that GPIO line exclusively.
+CHARGER_GPIO_STATUS_FILE = Path("/tmp/charger_gpio_status.json")
+CHARGER_GPIO_MAX_AGE_SECONDS = 5.0  # writer updates every 500ms; generous margin
+
+# Mirrors bms_data_service.py's own convention: the BMS's own chargingMos
+# flag is documented as unreliable on this pack, so "charging" is derived
+# from measured current instead.
+CHARGING_CURRENT_THRESHOLD = 0.5  # Amps
+
 class BMSAPIService:
     """BMS API Service for serving cached data"""
     
@@ -93,6 +103,27 @@ class BMSAPIService:
             "is_fresh": age_seconds < MAX_DATA_AGE_SECONDS,
             "current_time": current_time
         }
+
+def read_charger_gpio_status() -> Optional[bool]:
+    """Read the charger-detect GPIO state exported by gpio_control_service.py.
+    Returns None if the file is missing, unreadable, or stale — callers must
+    treat that as 'unknown', not as charger_connected=False, since a
+    consumer using this as a movement-safety interlock should fail toward
+    blocking motion when the signal can't be confirmed."""
+    try:
+        if not CHARGER_GPIO_STATUS_FILE.exists():
+            return None
+        age = time.time() - CHARGER_GPIO_STATUS_FILE.stat().st_mtime
+        if age > CHARGER_GPIO_MAX_AGE_SECONDS:
+            logger.warning(f"Charger GPIO status file is {age:.1f}s old (max: {CHARGER_GPIO_MAX_AGE_SECONDS}s)")
+            return None
+        with open(CHARGER_GPIO_STATUS_FILE, 'r') as f:
+            payload = json.load(f)
+        return bool(payload.get('charger_connected'))
+    except Exception as e:
+        logger.error(f"Failed to read charger GPIO status file: {e}")
+        return None
+
 
 # Global API service instance
 api_service = BMSAPIService(DATA_FILE_PATH, STATUS_FILE_PATH)
@@ -357,7 +388,14 @@ def get_bms_summary():
         "communication_quality": "excellent" if summary["response_received"] else "poor",
         "system_health": "healthy" if freshness["is_fresh"] and summary["response_received"] else "degraded"
     }
-    
+
+    # Raw charger-detect GPIO state (None if unknown/stale — see
+    # read_charger_gpio_status) and a current-based "actively charging"
+    # flag, mirroring bms_data_service.py's own current > threshold logic
+    # rather than the BMS's own chargingMos flag (documented unreliable).
+    summary["charger_connected"] = read_charger_gpio_status()
+    summary["charging"] = summary["current"] > CHARGING_CURRENT_THRESHOLD
+
     return jsonify(summary)
 
 @app.route('/bms/formatted')

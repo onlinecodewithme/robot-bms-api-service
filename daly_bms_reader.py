@@ -205,8 +205,9 @@ class DalyBMSReader:
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
         """Handle BLE notifications"""
         logger.debug(f"Notification received from {sender.uuid}: {data.hex()}")
-        self.last_response = data
-        self.response_received = True
+        self.last_response.extend(data)
+        if len(self.last_response) >= 129:
+            self.response_received = True
     
     async def read_bms_data(self) -> bool:
         """Read BMS data using Daly protocol"""
@@ -237,6 +238,7 @@ class DalyBMSReader:
             logger.debug(f"Sending command: {command.hex()}")
             
             self.response_received = False
+            self.last_response = bytearray()
             await self.client.write_gatt_char(tx_char, command)
             
             # Wait for response
@@ -303,23 +305,12 @@ class DalyBMSReader:
                 self.bms_data.min_cell_voltage = min_cell_voltage
                 
                 # Parse Current from BMS response
-                # In Daly protocol, current is typically at bytes 35-38 (after cell voltages)
-                # Usually stored as signed 16-bit or 32-bit value in milliamps
-                if len(data) >= 38:
-                    # Try parsing as signed 16-bit value at byte 35-36 (common location)
-                    current_raw = struct.unpack(">h", data[35:37])[0]  # signed 16-bit big-endian
-                    self.bms_data.current = current_raw / 100.0  # Convert from centiamps to amps
-                    
-                    # If the value seems unreasonable, try another location (bytes 37-38)
-                    if abs(self.bms_data.current) > 500:  # Sanity check for reasonable current values
-                        current_raw = struct.unpack(">h", data[37:39])[0]
-                        self.bms_data.current = current_raw / 100.0
-                        
-                    # Another common format is 32-bit at bytes 35-38
-                    if abs(self.bms_data.current) > 500:
-                        current_raw = struct.unpack(">i", data[35:39])[0]  # signed 32-bit
-                        self.bms_data.current = current_raw / 1000.0  # Convert from milliamps to amps
-                        
+                # Daly protocol stores current as an unsigned 16-bit value at bytes 85-86,
+                # immediately before the SOC field at bytes 87-88, offset by 30000 with a
+                # resolution of 0.1A (raw 30000 == 0A; > 30000 = charging, < 30000 = discharging)
+                if len(data) >= 87:
+                    current_raw = struct.unpack(">H", data[85:87])[0]
+                    self.bms_data.current = (current_raw - 30000) / 10.0
                     logger.debug(f"Parsed current: {self.bms_data.current}A (raw: {current_raw})")
                 else:
                     self.bms_data.current = 0.0
