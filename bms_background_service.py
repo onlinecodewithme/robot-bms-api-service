@@ -14,6 +14,7 @@ import signal
 import sys
 from pathlib import Path
 from daly_bms_reader import DalyBMSReader
+from daly_uart_reader import DalyUARTReader, DEFAULT_PORT as DEFAULT_UART_PORT, DEFAULT_BAUD as DEFAULT_UART_BAUD
 
 # Configure logging
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -35,14 +36,26 @@ logger = logging.getLogger('bms_background')
 class BMSBackgroundService:
     """Background service for collecting BMS data"""
     
-    def __init__(self, data_file_path: str = "./bms_data/bms_latest.json", read_interval: float = 5.0):
+    def __init__(self, data_file_path: str = "./bms_data/bms_latest.json", read_interval: float = 5.0,
+                 simulation: bool = False, transport: str = "ble",
+                 uart_port: str = DEFAULT_UART_PORT, uart_baud: int = DEFAULT_UART_BAUD):
         self.data_file_path = Path(data_file_path)
         self.read_interval = read_interval
-        self.reader = DalyBMSReader(scan_timeout=10.0, read_interval=read_interval)
+        self.simulation = simulation or os.getenv('BMS_SIMULATION', 'false').lower() == 'true'
+        self.transport = transport
+        if transport == "uart":
+            # Daly 13-byte UART protocol over a USB serial adapter (no BLE needed)
+            self.reader = DalyUARTReader(port=uart_port, baudrate=uart_baud, read_interval=read_interval)
+        else:
+            self.reader = DalyBMSReader(scan_timeout=10.0, read_interval=read_interval)
         self.running = False
         self.last_successful_read = 0
         self.connection_retry_count = 0
         self.max_retry_attempts = 10
+        
+        # Simulation parameters
+        self._sim_soc = 87.0
+        self._sim_charging = True
         
         # Ensure data directory exists
         self.data_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +63,79 @@ class BMSBackgroundService:
         # Signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
+
+    def generate_mock_bms_data(self) -> dict:
+        """Generate perfect mock BMS data matching the Daly BMS BLE protocol structure"""
+        # Simulate charging/discharging SOC behavior
+        if self._sim_charging:
+            self._sim_soc += 0.05
+            if self._sim_soc >= 98.0:
+                self._sim_charging = False
+        else:
+            self._sim_soc -= 0.02
+            if self._sim_soc <= 25.0:
+                self._sim_charging = True
+                
+        # Generate cell voltages (16 cells, average ~3.3V)
+        base_cell = 3.25 + (self._sim_soc / 100.0) * 0.15  # 3.25V to 3.4V
+        cell_voltages = []
+        for i in range(16):
+            # Add small random variance to cell voltages
+            variance = ((i * 7 + 13) % 11 - 5) * 0.002
+            cell_voltages.append({
+                "cellNumber": i + 1,
+                "voltage": round(base_cell + variance, 3)
+            })
+            
+        pack_voltage = round(sum(c['voltage'] for c in cell_voltages), 3)
+        current = round(4.5 + (time.time() % 10) * 0.2, 2) if self._sim_charging else -1.5
+        remaining_capacity = round(230.0 * (self._sim_soc / 100.0), 1)
+        
+        timestamp_ms = int(time.time() * 1000)
+        
+        mock_data = {
+            "timestamp": timestamp_ms,
+            "device": "DL-41181201189F",
+            "mac_address": "41:18:12:01:18:9f",
+            "daly_protocol": {
+                "status": "characteristics_found",
+                "notifications": "enabled",
+                "commands": {
+                    "main_info": {
+                        "command_sent": "A540900800000000000000003D",
+                        "response_received": True,
+                        "response_data": "a5409008" + "00" * 8 + "3d",
+                        "parsed_data": {
+                            "header": {
+                                "startByte": "0xA5",
+                                "commandId": "0x90",
+                                "dataLength": 8
+                            },
+                            "cellVoltages": cell_voltages,
+                            "packVoltage": pack_voltage,
+                            "current": current,
+                            "soc": round(self._sim_soc, 1),
+                            "remainingCapacity": remaining_capacity,
+                            "totalCapacity": 230.0,
+                            "cycles": 5,
+                            "temperatures": [
+                                {"sensor": "T1", "temperature": round(28.5 + (current * 0.2 if current > 0 else 0), 1)},
+                                {"sensor": "T2", "temperature": round(29.0 + (current * 0.2 if current > 0 else 0), 1)}
+                            ],
+                            "mosStatus": {
+                                "chargingMos": self._sim_charging,
+                                "dischargingMos": True,
+                                "balancing": False
+                            },
+                            "checksum": "0x0000",
+                            "timestamp": str(timestamp_ms)
+                        }
+                    }
+                }
+            },
+            "data_found": True
+        }
+        return mock_data
     
     def signal_handler(self, signum, frame):
         """Handle shutdown signals"""
@@ -131,8 +217,8 @@ class BMSBackgroundService:
         """Write error status when BMS reading fails"""
         error_data = {
             "timestamp": int(time.time() * 1000),
-            "device": "DL-41181201189F",
-            "mac_address": "41:18:12:01:18:9f",
+            "device": getattr(self.reader, 'DEVICE_NAME', "DL-41181201189F") if self.transport == 'uart' else "DL-41181201189F",
+            "mac_address": self.reader.port if self.transport == 'uart' else "41:18:12:01:18:9f",
             "error": error,
             "data_found": False,
             "service_status": "error",
@@ -153,6 +239,7 @@ class BMSBackgroundService:
         logger.info("Starting BMS Background Service...")
         logger.info(f"Data file: {self.data_file_path}")
         logger.info(f"Read interval: {self.read_interval}s")
+        logger.info(f"Transport: {self.transport}" + (f" ({self.reader.port} @ {self.reader.baudrate} baud)" if self.transport == 'uart' else ''))
         
         self.running = True
         
@@ -167,6 +254,21 @@ class BMSBackgroundService:
         
         while self.running:
             try:
+                if self.simulation:
+                    data = self.generate_mock_bms_data()
+                    self.write_bms_data(data)
+                    self.write_status_file({
+                        "service": "bms_background",
+                        "status": "reading",
+                        "last_read": time.time(),
+                        "pack_voltage": data['daly_protocol']['commands']['main_info']['parsed_data']['packVoltage'],
+                        "soc": data['daly_protocol']['commands']['main_info']['parsed_data']['soc'],
+                        "current": data['daly_protocol']['commands']['main_info']['parsed_data']['current'],
+                        "mode": "simulation"
+                    })
+                    await asyncio.sleep(self.read_interval)
+                    continue
+
                 # Check connection status
                 if not self.reader.connected:
                     if self.connection_retry_count >= self.max_retry_attempts:
@@ -260,6 +362,13 @@ async def main():
     parser.add_argument('--data-file', default='/tmp/bms_latest.json', help='Output data file path')
     parser.add_argument('--interval', type=float, default=5.0, help='Read interval in seconds')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO', help='Log level')
+    parser.add_argument('--simulation', action='store_true', help='Enable simulation mode')
+    parser.add_argument('--transport', choices=['ble', 'uart'], default=os.getenv('BMS_TRANSPORT', 'ble'),
+                        help='How to talk to the BMS: ble (built-in Bluetooth) or uart (USB serial adapter)')
+    parser.add_argument('--port', default=os.getenv('BMS_UART_PORT', DEFAULT_UART_PORT),
+                        help='Serial port for --transport uart')
+    parser.add_argument('--baud', type=int, default=int(os.getenv('BMS_UART_BAUD', DEFAULT_UART_BAUD)),
+                        help='Baud rate for --transport uart')
     
     args = parser.parse_args()
     
@@ -267,7 +376,8 @@ async def main():
     logging.getLogger().setLevel(getattr(logging, args.log_level))
     
     # Start service
-    service = BMSBackgroundService(args.data_file, args.interval)
+    service = BMSBackgroundService(args.data_file, args.interval, args.simulation,
+                                   transport=args.transport, uart_port=args.port, uart_baud=args.baud)
     
     try:
         await service.run_service()

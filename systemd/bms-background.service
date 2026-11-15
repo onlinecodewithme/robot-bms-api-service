@@ -3,7 +3,8 @@ Description=BMS Background Data Collection Service
 Documentation=file:///home/x4mc1/Documents/robot-bms-api-service/README.md
 After=network-online.target bluetooth.service
 Wants=network-online.target
-Requires=bluetooth.service
+# bluetooth.service is no longer Required: the BMS is read over a USB-UART
+# adapter (--transport uart). Switch back to --transport ble to use Bluetooth.
 
 [Service]
 Type=simple
@@ -11,7 +12,7 @@ User=x4mc1
 Group=x4mc1
 WorkingDirectory=/home/x4mc1/Documents/robot-bms-api-service
 Environment=PATH=/home/x4mc1/Documents/robot-bms-api-service/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/x4mc1/Documents/robot-bms-api-service/venv/bin/python /home/x4mc1/Documents/robot-bms-api-service/bms_background_service.py --data-file /home/x4mc1/Documents/robot-bms-api-service/bms_data/bms_latest.json --interval 5.0 --log-level INFO
+ExecStart=/home/x4mc1/Documents/robot-bms-api-service/venv/bin/python /home/x4mc1/Documents/robot-bms-api-service/bms_background_service.py --data-file /home/x4mc1/Documents/robot-bms-api-service/bms_data/bms_latest.json --interval 5.0 --log-level INFO --transport uart --port /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 --baud 9600
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -31,7 +32,7 @@ MemoryMax=256M
 CPUQuota=50%
 
 # Supplementary groups for Bluetooth access
-SupplementaryGroups=bluetooth
+SupplementaryGroups=bluetooth dialout
 
 [Install]
 WantedBy=multi-user.target
