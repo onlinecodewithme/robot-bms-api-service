@@ -2,6 +2,54 @@
 
 A comprehensive Python-based solution for reading battery data from Daly Smart BMS via Bluetooth Low Energy (BLE) using Raspberry Pi 4's built-in Bluetooth. This project provides both standalone BLE reading and a full REST API service with background data collection for production deployments.
 
+## ⚡ Current setup: USB-UART (since 2026-11-15)
+
+The robot now reads the BMS over a **CH340 USB-UART adapter**, not Bluetooth. BLE
+scans kept failing, so the BMS UART was wired to the Pi. The BLE code below still
+works and can be selected again.
+
+| Item | Value |
+|---|---|
+| Port | `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` |
+| Line settings | 9600 baud, 8N1 |
+| Protocol | Daly 13-byte frames, host address `0x40`, BMS replies with `0x01` |
+| Reader | `daly_uart_reader.py` (same JSON output as the BLE reader) |
+| Rated capacity | 54 Ah, read from register `0x50` (the BLE code hardcoded 230 Ah) |
+
+The background service selects the transport:
+
+```bash
+bms_background_service.py --transport uart \
+  --port /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 --baud 9600
+# or --transport ble, or --simulation for mock data
+```
+
+`systemd/bms-background.service` runs UART mode and no longer requires
+`bluetooth.service`. After editing it, copy it to `/etc/systemd/system/`, then run
+`sudo systemctl daemon-reload` and `sudo systemctl restart bms-background`.
+
+Read the BMS once by hand (stop the service first so the port is free):
+
+```bash
+sudo systemctl stop bms-background
+venv/bin/python daly_uart_reader.py --once
+sudo systemctl start bms-background
+```
+
+Notes:
+
+- The venv needs `pyserial` (`venv/bin/pip install pyserial`).
+- This BMS does not answer registers `0x97` (balancing) or `0x98` (faults), so
+  balancing always reports false and faults are not exposed.
+- `/bms/summary` also reports `charger_connected`, read from
+  `/tmp/charger_gpio_status.json` (`null` when missing or older than 5 s), and
+  `charging`, which is `current > 0.5 A`.
+- On the robot, the ROS 2 `serial_bridge` node must not open this adapter. It skips
+  USB vendor ID `0x1a86` for that reason.
+
+Full reference, including the robot-side changes:
+`docs/drivetrain-and-bms-reference.md` in the robot-hardware-controller-unit repo.
+
 ## 🚀 Features
 
 ### Core Features
